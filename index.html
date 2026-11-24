@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><title>Танки</title>
+<style>
+html,body{margin:0;height:100%;background:#222;color:#eee;font-family:Arial,sans-serif;overflow:hidden}
+#hud{display:flex;flex-wrap:wrap;gap:4px 22px;padding:6px 10px;font-size:14px;min-height:20px}
+canvas{display:block;margin:0 auto;cursor:crosshair}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,.85)}
+.hide{display:none!important}
+button{padding:10px 24px;font-size:18px;cursor:pointer}
+#msg{position:fixed;top:40%;left:0;right:0;text-align:center;font-size:28px;pointer-events:none;text-shadow:0 0 6px #000}
+small{color:#aaa;max-width:600px;text-align:center}
+select{font-size:15px;padding:2px}
+</style></head><body>
+<div id="menu" class="ov">
+  <h1>Танки</h1>
+  <label>Игроков: <select id="cnt"><option>2</option><option>3</option><option selected>4</option></select></label>
+  <label>Очков до победы: <select id="tgt"><option>1</option><option selected>3</option><option>5</option><option>10</option></select></label>
+  <label>Здоровье танков: <select id="hp"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>7</option><option>10</option></select></label>
+  <label>Патронов на танк: <select id="ammo"><option selected>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+  <label>Скорость танков: <select id="speed"><option value="0.75">медленно</option><option value="1" selected>обычно</option><option value="1.25">быстро</option><option value="1.5">очень быстро</option></select></label>
+  <label>Время жизни пули: <select id="bltime"><option>1</option><option>2</option><option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option></select> с</label>
+  <label>Ширина карты: от <select id="minW"></select> до <select id="maxW"></select></label>
+  <label>Длина карты: от <select id="minH"></select> до <select id="maxH"></select></label>
+  <div id="cols"></div>
+  <button id="start">Старт</button>
+  <small>2 игрока: WASD + Q и стрелки + M · 3 игрока: WASD + Q, стрелки + M, мышь (ЛКМ огонь, ПКМ движение) · 4 игрока: WASD + Q, IJKL + Y, стрелки + M, мышь<br>Esc во время игры — выход в меню</small>
+</div>
+<div id="over" class="ov hide"><h2 id="win"></h2><p id="fin"></p><button id="again">В меню</button></div>
+<div id="msg" class="hide"></div>
+<div id="hud"></div>
+<canvas id="cv"></canvas>
+<script>
+// ===== Конфигурация =====
+const CFG={MAXV:3.0,ACC:3.5,BSPEED:5,TURN:2.6,LIFE:15,BONUS_EVERY:5,BONUS_LIFE:15,MAX_BONUS:8,BOOST:8,GRACE:3,NEXT_ROUND:2500,
+  WALL_T:0.12,OPEN:0.2,STEP:0.05};
+const SIDES=['n','e','s','w','c'];
+const KEYS=[
+  {u:'KeyW',d:'KeyS',l:'KeyA',r:'KeyD',f:'KeyQ'},
+  {u:'ArrowUp',d:'ArrowDown',l:'ArrowLeft',r:'ArrowRight',f:'KeyM'},
+  {u:'KeyI',d:'KeyK',l:'KeyJ',r:'KeyL',f:'KeyY'}];
+const COLORS=['#e74c3c','#3498db','#2ecc71','#f1c40f'];
+const BTYPES={hp:{c:'#e91e63',s:'+'},speed:{c:'#00bcd4',s:'»'},ammo:{c:'#ff9800',s:'•'}};
+const rnd=n=>Math.floor(Math.random()*n);
+const norm=a=>Math.atan2(Math.sin(a),Math.cos(a));
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const over=document.getElementById('over'),win=document.getElementById('win'),fin=document.getElementById('fin'),msg=document.getElementById('msg');
+const hudEl=document.getElementById('hud'),menu=document.getElementById('menu');
+
+// ===== Ввод =====
+class Input{
+  constructor(){
+    this.down={};this.mouse={x:0,y:0,l:false,r:false};
+    addEventListener('keydown',e=>{this.down[e.code]=true;if(e.code.startsWith('Arrow')||e.code==='Space')e.preventDefault();});
+    addEventListener('keyup',e=>this.down[e.code]=false);
+    addEventListener('blur',()=>{this.down={};this.mouse.l=this.mouse.r=false;});
+    cv.addEventListener('contextmenu',e=>e.preventDefault());
+    cv.addEventListener('mousemove',e=>{const b=cv.getBoundingClientRect();this.mouse.x=e.clientX-b.left;this.mouse.y=e.clientY-b.top;});
+    cv.addEventListener('mousedown',e=>{if(e.button===0)this.mouse.l=true;if(e.button===2)this.mouse.r=true;});
+    addEventListener('mouseup',e=>{if(e.button===0)this.mouse.l=false;if(e.button===2)this.mouse.r=false;});
+  }
+}
+
+// ===== Карта: каждая клетка хранит строку сторон стен ('' = пусто, 'ne' = две полоски) =====
+class GameMap{
+    constructor(o){
+    const range=(a,b)=>a+rnd(b-a+1);
+    this.w=range(o.minW,o.maxW);
+    this.h=range(o.minH,o.maxH);
+    const{w,h}=this;
+    // 1. случайное остовное дерево (DFS): его проходы открыты, значит все клетки связаны
+    const vis=Array.from({length:h},()=>Array(w).fill(false));
+    const wv=Array.from({length:h},()=>Array(w-1).fill(true)); // стена между (x,y) и (x+1,y)
+    const wh=Array.from({length:h-1},()=>Array(w).fill(true)); // стена между (x,y) и (x,y+1)
+    const st=[[rnd(w),rnd(h)]];vis[st[0][1]][st[0][0]]=true;
+    while(st.length){
+      const[x,y]=st[st.length-1];
+      const nb=[[x+1,y],[x-1,y],[x,y+1],[x,y-1]].filter(([a,b])=>a>=0&&b>=0&&a<w&&b<h&&!vis[b][a]);
+      if(!nb.length){st.pop();continue;}
+      const[a,b]=nb[rnd(nb.length)];
+      vis[b][a]=true;
+      if(a!==x)wv[y][Math.min(x,a)]=false;else wh[Math.min(y,b)][x]=false;
+      st.push([a,b]);
+    }
+    // 2. счётчики стен по осям: на клетку не больше одной стены слева/справа (lr) и сверху/снизу (ud)
+    const lr=Array.from({length:h},()=>Array(w).fill(0)),ud=Array.from({length:h},()=>Array(w).fill(0));
+    for(let x=0;x<w;x++){ud[0][x]++;ud[h-1][x]++;}  // периметр сверху и снизу
+    for(let y=0;y<h;y++){lr[y][0]++;lr[y][w-1]++;}  // периметр слева и справа
+    // 3. остальные рёбра (не из дерева) становятся стенами, если не нарушают ограничения
+    const cand=[];
+    for(let y=0;y<h;y++)for(let x=0;x<w-1;x++)if(wv[y][x])cand.push(['v',x,y]);
+    for(let y=0;y<h-1;y++)for(let x=0;x<w;x++)if(wh[y][x])cand.push(['h',x,y]);
+    cand.sort(()=>Math.random()-.5);
+    for(const[t,x,y]of cand){
+      if(t==='v'){
+        if(lr[y][x]||lr[y][x+1]||Math.random()<CFG.OPEN){wv[y][x]=false;continue;}
+        lr[y][x]++;lr[y][x+1]++;
+      }else{
+        if(ud[y][x]||ud[y+1][x]||Math.random()<CFG.OPEN){wh[y][x]=false;continue;}
+        ud[y][x]++;ud[y+1][x]++;
+      }
+    }
+    // 4. строки сторон клеток
+    this.g=Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>{
+      let s='';
+      if(y===0)s+='n';else if(wh[y-1][x])s+='n';
+      if(y===h-1)s+='s';else if(wh[y][x])s+='s';
+      if(x===0)s+='w';else if(wv[y][x-1])s+='w';
+      if(x===w-1)s+='e';else if(wv[y][x])s+='e';
+      return s;
+    }));
+  }
+  rects(i,j){ // прямоугольники полосок клетки (пиксели)
+    const T=this.T,t=CFG.WALL_T*T,x=i*T,y=j*T,s=this.g[j][i],r=[];
+    if(s.includes('n'))r.push([x,y,T,t]);
+    if(s.includes('s'))r.push([x,y+T-t,T,t]);
+    if(s.includes('w'))r.push([x,y,t,T]);
+    if(s.includes('e'))r.push([x+T-t,y,t,T]);
+    return r;
+  }
+  inBounds(i,j){return i>=0&&j>=0&&i<this.w&&j<this.h;}
+  pointWall(x,y){
+    const i=Math.floor(x/this.T),j=Math.floor(y/this.T);
+    if(!this.inBounds(i,j))return true;
+    return this.rects(i,j).some(([rx,ry,rw,rh])=>x>=rx&&x<=rx+rw&&y>=ry&&y<=ry+rh);
+  }
+  circleHit(x,y,r){
+    const T=this.T,x0=Math.floor((x-r)/T),x1=Math.floor((x+r)/T),y0=Math.floor((y-r)/T),y1=Math.floor((y+r)/T);
+    for(let j=y0;j<=y1;j++)for(let i=x0;i<=x1;i++){
+      if(!this.inBounds(i,j))return true;
+      for(const[rx,ry,rw,rh]of this.rects(i,j)){
+        const cx=Math.max(rx,Math.min(x,rx+rw)),cy=Math.max(ry,Math.min(y,ry+rh));
+        if((x-cx)**2+(y-cy)**2<r*r)return true;
+      }
+    }
+    return false;
+  }
+}
+
+// ===== Танк =====
+class Tank{
+  constructor(g,x,y,color,ctrl,name){
+    Object.assign(this,{g,x,y,color,ctrl,name,a:0,v:0,hp:g.opts.hp,ammo:g.opts.ammo,boost:0,alive:true,fireWas:false});
+  }
+  get R(){return this.g.T/4;}
+  update(dt){
+    if(!this.alive)return;
+    const{g,ctrl}=this,inp=g.input,T=g.T,d=inp.down;
+    let thr,fire;
+    if(ctrl.mouse){
+      const m=inp.mouse,step=CFG.TURN*dt;
+      const want=Math.atan2(m.y-this.y,m.x-this.x);
+      this.a+=Math.max(-step,Math.min(step,norm(want-this.a)));
+      thr=m.r?1:0;fire=m.l;
+    }else{
+      this.a+=((d[ctrl.r]?1:0)-(d[ctrl.l]?1:0))*CFG.TURN*dt;
+      thr=(d[ctrl.u]?1:0)-(d[ctrl.d]?1:0);fire=!!d[ctrl.f];
+    }
+    if(this.boost>0)this.boost-=dt;
+    const maxV=CFG.MAXV*g.opts.speed*T*(this.boost>0?1.6:1);
+    this.v=thr?Math.max(-maxV,Math.min(maxV,this.v+thr*CFG.ACC*T*dt)):this.v*Math.pow(0.05,dt);
+    const mx=Math.cos(this.a)*this.v*dt,my=Math.sin(this.a)*this.v*dt,R=this.R;
+    // подшаги короче толщины стены: танк не может проскочить тонкую полоску
+    const n=Math.max(1,Math.ceil(Math.hypot(mx,my)/(T*CFG.STEP))),sx=mx/n,sy=my/n;
+    let blocked=false;
+    for(let k=0;k<n;k++){
+      if(g.free(this.x+sx,this.y+sy,R,this)){this.x+=sx;this.y+=sy;}
+      else{ // скольжение вдоль стены
+        blocked=true;
+        if(g.free(this.x+sx,this.y,R,this))this.x+=sx;
+        else if(g.free(this.x,this.y+sy,R,this))this.y+=sy;
+        else break;
+      }
+    }
+    if(blocked)this.v*=0.93;
+    if(fire&&!this.fireWas)this.shoot();
+    this.fireWas=fire;
+  }
+  shoot(){
+    if(this.g.bullets.filter(b=>b.owner===this).length>=this.ammo)return;
+    const c=Math.cos(this.a),s=Math.sin(this.a),o=this.R+4;
+    this.g.bullets.push(new Bullet(this,this.x+c*o,this.y+s*o,c,s));
+  }
+  draw(c){
+    if(!this.alive)return;
+    const T=this.g.T,L=T/2,W=T*0.4;
+    c.save();c.translate(this.x,this.y);c.rotate(this.a);
+    c.fillStyle='#111';c.fillRect(-L/2,-W/2-3,L,3);c.fillRect(-L/2,W/2,L,3); // гусеницы
+    c.fillStyle=this.color;c.fillRect(-L/2+2,-W/2,L-4,W);                    // корпус
+    c.fillStyle='#222';c.fillRect(-T*0.1,-T*0.1,T*0.2,T*0.2);                // башня
+    c.fillRect(0,-T*0.03,T*0.25,T*0.06);                                      // дуло
+    c.restore();
+  }
+}
+
+// ===== Пуля =====
+class Bullet{
+  constructor(owner,x,y,dx,dy){
+    const s=CFG.BSPEED*owner.g.T;
+    Object.assign(this,{owner,x,y,vx:dx*s,vy:dy*s,life:owner.g.opts.bulletLife,bounces:0,dead:false});
+  }
+  update(dt,g){
+    if((this.life-=dt)<=0){this.dead=true;return;}
+    const T=g.T,n=Math.max(1,Math.ceil(Math.hypot(this.vx,this.vy)*dt/(T*CFG.STEP))),sdt=dt/n;
+    for(let k=0;k<n;k++){
+      const nx=this.x+this.vx*sdt,ny=this.y+this.vy*sdt;
+      const hx=g.map.pointWall(nx,this.y),hy=g.map.pointWall(this.x,ny);
+      if(hx||hy||g.map.pointWall(nx,ny)){
+        if(hx)this.vx=-this.vx;
+        if(hy)this.vy=-this.vy;
+        if(!hx&&!hy){this.vx=-this.vx;this.vy=-this.vy;}
+        this.bounces++;continue;
+      }
+      this.x=nx;this.y=ny;
+      for(const t of g.tanks){
+        if(!t.alive||(t===this.owner&&this.bounces===0))continue;
+        if(Math.hypot(t.x-this.x,t.y-this.y)<t.R+3){
+          t.hp--;if(t.hp<=0)t.alive=false;this.dead=true;return;
+        }
+      }
+    }
+  }
+  draw(c){c.fillStyle=this.owner.color;c.beginPath();c.arc(this.x,this.y,3,0,7);c.fill();}
+}
+
+// ===== Игра (матч из нескольких раундов) =====
+class Game{
+  constructor(){this.input=new Input();this.active=false;this.timer=null;}
+  start(players,target,opts){
+    this.players=players;this.target=target;this.opts=opts;
+    this.scores=players.map(()=>0);
+    this.active=true;
+    this.newRound();
+  }
+  newRound(){
+    this.map=new GameMap(this.opts);
+    const{w,h}=this.map;
+    const hudH=hudEl.offsetHeight;
+    const T=Math.max(8,Math.floor(Math.min((innerWidth-10)/w,(innerHeight-hudH-10)/h)));
+    this.T=T;this.map.T=T;
+    cv.width=w*T;cv.height=h*T;
+    const sp=[[1,1],[w-2,h-2],[w-2,1],[1,h-2]]; // спавны в углах
+    this.tanks=this.players.map((p,i)=>{
+      const x=(sp[i][0]+.5)*T,y=(sp[i][1]+.5)*T;
+      const t=new Tank(this,x,y,p.color,p.ctrl,p.name);
+      t.a=Math.atan2(h*T/2-y,w*T/2-x);return t;
+    });
+    this.bullets=[];this.bonuses=[];this.bt=0;this.ht=0;this.grace=null;
+    this.running=true;this.last=performance.now();
+    msg.classList.add('hide');
+    this.hud();
+    requestAnimationFrame(t=>this.loop(t));
+  }
+  free(x,y,r,self){
+    if(this.map.circleHit(x,y,r))return false;
+    return this.tanks.every(t=>t===self||!t.alive||Math.hypot(t.x-x,t.y-y)>=t.R+r);
+  }
+  loop(now){
+    const dt=Math.min((now-this.last)/1000,0.05);this.last=now;
+    this.update(dt);this.draw();
+    if(this.running)requestAnimationFrame(t=>this.loop(t));
+  }
+  update(dt){
+    this.tanks.forEach(t=>t.update(dt));
+    this.bullets.forEach(b=>b.update(dt,this));
+    this.bullets=this.bullets.filter(b=>!b.dead);
+    if((this.bt+=dt)>=CFG.BONUS_EVERY){this.bt=0;this.spawnBonus();}
+    this.bonuses=this.bonuses.filter(b=>{
+      b.life-=dt;
+      const t=this.tanks.find(t=>t.alive&&Math.hypot(t.x-b.x,t.y-b.y)<this.T/2);
+      if(t){this.applyBonus(b,t);return false;}
+      return b.life>0;
+    });
+    if((this.ht-=dt)<=0){this.ht=0.2;this.hud();}
+    const alive=this.tanks.filter(t=>t.alive);
+    if(alive.length<=1){
+      if(this.grace===null)this.grace=CFG.GRACE;
+      this.grace-=dt;
+      if(alive.length===0)return this.endRound(null);
+      if(this.grace<=0)return this.endRound(alive[0]);
+    }
+  }
+  endRound(w){
+    this.running=false;this.hud();
+    let text;
+    if(w){
+      this.scores[this.tanks.indexOf(w)]++;
+      text=`Раунд: победил ${w.name}`;
+    }else text='Раунд: ничья, очки не начисляются';
+    const champ=this.scores.findIndex(s=>s>=this.target);
+    if(champ>=0){
+      this.active=false;
+      win.textContent=`Победил: ${this.players[champ].name}`;
+      win.style.color=this.players[champ].color;
+      fin.textContent=this.scoreText();
+      over.classList.remove('hide');
+      return;
+    }
+    msg.textContent=`${text} · ${this.scoreText()}`;
+    msg.classList.remove('hide');
+    this.timer=setTimeout(()=>this.newRound(),CFG.NEXT_ROUND);
+  }
+  toMenu(){
+    this.active=false;this.running=false;
+    clearTimeout(this.timer);
+    msg.classList.add('hide');over.classList.add('hide');
+    menu.classList.remove('hide');
+  }
+  scoreText(){return this.players.map((p,i)=>`${p.name}: ${this.scores[i]}`).join(' | ');}
+    spawnBonus(){
+    const max=CFG.MAX_BONUS;
+    if(max===0||(max>0&&this.bonuses.length>=max))return; // 0 — бонусов нет, -1 — без ограничений
+    const m=this.map,T=this.T,types=Object.keys(BTYPES);
+    for(let k=0;k<50;k++){
+      const i=rnd(m.w),j=rnd(m.h);
+      if(m.g[j][i])continue; // клетка со стенами не подходит
+      const x=(i+.5)*T,y=(j+.5)*T;
+      if(this.tanks.some(t=>t.alive&&Math.hypot(t.x-x,t.y-y)<T))continue;
+      this.bonuses.push({x,y,type:types[rnd(3)],life:CFG.BONUS_LIFE});return;
+    }
+  }
+  applyBonus(b,t){
+    if(b.type==='hp')t.hp=Math.min(this.opts.hp+2,t.hp+1);
+    if(b.type==='speed')t.boost=CFG.BOOST;
+    if(b.type==='ammo')t.ammo=Math.min(this.opts.ammo+2,t.ammo+1);
+  }
+  draw(){
+    const T=this.T,m=this.map,c=ctx;
+    c.fillStyle='#4a4a4a';c.fillRect(0,0,cv.width,cv.height);
+    c.fillStyle='#8b5a2b';
+    for(let j=0;j<m.h;j++)for(let i=0;i<m.w;i++)
+      for(const[x,y,w,h]of m.rects(i,j))c.fillRect(x,y,w,h);
+    c.textAlign='center';c.textBaseline='middle';
+    for(const b of this.bonuses){
+      c.fillStyle=BTYPES[b.type].c;c.beginPath();c.arc(b.x,b.y,T*0.25,0,7);c.fill();
+      c.fillStyle='#fff';c.font=`bold ${T*0.3}px Arial`;c.fillText(BTYPES[b.type].s,b.x,b.y);
+    }
+    this.tanks.forEach(t=>t.draw(c));
+    this.bullets.forEach(b=>b.draw(c));
+  }
+  hud(){
+    const grace=this.grace!==null&&this.grace>0?`<span>Раунд завершится через ${this.grace.toFixed(1)} с</span>`:'';
+    hudEl.innerHTML=this.tanks.map((t,i)=>
+      `<span style="color:${t.color}">${t.name}: ${t.alive?'♥'.repeat(Math.max(0,t.hp)):'✖'} | патроны: ${t.ammo}${t.boost>0?' | ⚡':''} | очки: ${this.scores[i]}/${this.target}</span>`).join('')+grace;
+  }
+}
+
+// ===== Меню =====
+const game=new Game();
+const cols=document.getElementById('cols'),cnt=document.getElementById('cnt');
+const picked=[...COLORS];
+function renderCols(){
+  const n=+cnt.value;cols.innerHTML='';
+  for(let i=0;i<n;i++){
+    const l=document.createElement('label');l.style.margin='6px';
+    l.innerHTML=`Игрок ${i+1} <input type="color" value="${picked[i]}">`;
+    l.querySelector('input').oninput=e=>picked[i]=e.target.value;
+    cols.appendChild(l);
+  }
+}
+cnt.onchange=renderCols;renderCols();
+
+// Размеры карты: от 5 до 24 клеток, минимум не может превышать максимум
+const SIZES=Array.from({length:20},(_,i)=>i+5);
+function fillSizes(id,val){
+  const s=document.getElementById(id);
+  s.innerHTML=SIZES.map(v=>`<option${v===val?' selected':''}>${v}</option>`).join('');
+}
+fillSizes('minW',7);fillSizes('maxW',16);fillSizes('minH',7);fillSizes('maxH',16);
+function linkRange(minId,maxId){
+  const mn=document.getElementById(minId),mx=document.getElementById(maxId);
+  mn.onchange=()=>{if(+mx.value<+mn.value)mx.value=mn.value;};
+  mx.onchange=()=>{if(+mn.value>+mx.value)mn.value=mx.value;};
+}
+linkRange('minW','maxW');linkRange('minH','maxH');
+
+document.getElementById('start').onclick=()=>{
+  const n=+cnt.value,target=+document.getElementById('tgt').value;
+  const opts={
+    hp:+document.getElementById('hp').value,
+    ammo:+document.getElementById('ammo').value,
+    speed:+document.getElementById('speed').value,
+    bulletLife:+document.getElementById('bltime').value,
+    minW:+document.getElementById('minW').value,
+    maxW:+document.getElementById('maxW').value,
+    minH:+document.getElementById('minH').value,
+    maxH:+document.getElementById('maxH').value};
+  // WASD+Q, стрелки+M, IJKL+Y, мышь (ЛКМ огонь, ПКМ движение)
+  const WASD=KEYS[0],ARROWS=KEYS[1],IJKL=KEYS[2],MOUSE={mouse:true};
+  const layouts={2:[WASD,ARROWS],3:[WASD,ARROWS,MOUSE],4:[WASD,IJKL,ARROWS,MOUSE]};
+  const players=layouts[n].map((ctrl,i)=>({
+    name:ctrl.mouse?`Игрок ${i+1} (мышь)`:`Игрок ${i+1}`,
+    color:picked[i],
+    ctrl}));
+  menu.classList.add('hide');
+  game.start(players,target,opts);
+};
+document.getElementById('again').onclick=()=>{
+  over.classList.add('hide');menu.classList.remove('hide');
+};
+
+// ===== Esc: подтверждение выхода в меню =====
+addEventListener('keydown',e=>{
+  if(e.code==='Escape'&&game.active&&!e.repeat){
+    if(confirm('Выйти в меню? Текущая партия будет потеряна.'))game.toMenu();
+  }
+});
+</script>
+</body></html>
