@@ -13,25 +13,30 @@ select{font-size:15px;padding:2px}
 </style></head><body>
 <div id="menu" class="ov">
   <h1>Танки</h1>
-  <label>Игроков: <select id="cnt"><option>2</option><option>3</option><option selected>4</option></select></label>
+  <label>Игроков: <select id="cnt"><option>2</option><option selected>3</option><option>4</option></select></label>
   <label>Очков до победы: <select id="tgt"><option>1</option><option selected>3</option><option>5</option><option>10</option></select></label>
   <label>Здоровье танков: <select id="hp"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>7</option><option>10</option></select></label>
-  <label>Патронов на танк: <select id="ammo"><option selected>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+  <label>Патронов на танк: <select id="ammo"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
   <label>Скорость танков: <select id="speed"><option value="0.75">медленно</option><option value="1" selected>обычно</option><option value="1.25">быстро</option><option value="1.5">очень быстро</option></select></label>
+  <label>Плавное ускорение и торможение: <select id="smooth"><option value="0" selected>выключено</option><option value="1">включено</option></select></label>
+  <label>Цвет пола: <input type="color" id="floorColor" value="#77767b"></label>
+  <label>Цвет стен: <input type="color" id="wallColor" value="#5e5c64"></label>
   <label>Время жизни пули: <select id="bltime"><option>1</option><option>2</option><option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option></select> с</label>
   <label>Ширина карты: от <select id="minW"></select> до <select id="maxW"></select></label>
   <label>Длина карты: от <select id="minH"></select> до <select id="maxH"></select></label>
   <div id="cols"></div>
   <button id="start">Старт</button>
-  <small>2 игрока: WASD + Q и стрелки + M · 3 игрока: WASD + Q, стрелки + M, мышь (ЛКМ огонь, ПКМ движение) · 4 игрока: WASD + Q, IJKL + Y, стрелки + M, мышь<br>Esc во время игры — выход в меню</small>
+  <button id="reset">Сбросить настройки</button>
+  <small>2 игрока: WASD + Q и стрелки + M · 3 игрока: WASD + Q, стрелки + M, мышь (ЛКМ огонь, ПКМ движение) · 4 игрока: WASD + Q, IJKL + Y, стрелки + M, мышь<br>Ё во время игры — выход в меню.</small>
 </div>
 <div id="over" class="ov hide"><h2 id="win"></h2><p id="fin"></p><button id="again">В меню</button></div>
 <div id="msg" class="hide"></div>
 <div id="hud"></div>
 <canvas id="cv"></canvas>
+<button id="fs" style="position:fixed;right:10px;bottom:10px;z-index:5;padding:6px 12px;font-size:14px">На весь экран</button>
 <script>
 // ===== Конфигурация =====
-const CFG={MAXV:3.0,ACC:3.5,BSPEED:5,TURN:2.6,LIFE:15,BONUS_EVERY:5,BONUS_LIFE:15,MAX_BONUS:8,BOOST:8,GRACE:3,NEXT_ROUND:2500,
+const CFG={MAXV:3.0,ACC:3.5,BSPEED:5,TURN:4.5,LIFE:60,BONUS_EVERY:5,BONUS_LIFE:15,MAX_BONUS:-1,BOOST:8,GRACE:3,NEXT_ROUND:2500,
   WALL_T:0.12,OPEN:0.2,STEP:0.05};
 const SIDES=['n','e','s','w','c'];
 const KEYS=[
@@ -50,55 +55,89 @@ const hudEl=document.getElementById('hud'),menu=document.getElementById('menu');
 class Input{
   constructor(){
     this.down={};this.mouse={x:0,y:0,l:false,r:false};
+    // координаты мыши относительно канваса, даже если курсор за пределами карты
+    const rel=e=>{const b=cv.getBoundingClientRect();this.mouse.x=e.clientX-b.left;this.mouse.y=e.clientY-b.top;};
+    // нажатия по кнопкам и полям не должны стрелять
+    const isUI=e=>e.target.closest&&e.target.closest('button,select,input,label');
+
     addEventListener('keydown',e=>{this.down[e.code]=true;if(e.code.startsWith('Arrow')||e.code==='Space')e.preventDefault();});
     addEventListener('keyup',e=>this.down[e.code]=false);
     addEventListener('blur',()=>{this.down={};this.mouse.l=this.mouse.r=false;});
-    cv.addEventListener('contextmenu',e=>e.preventDefault());
-    cv.addEventListener('mousemove',e=>{const b=cv.getBoundingClientRect();this.mouse.x=e.clientX-b.left;this.mouse.y=e.clientY-b.top;});
-    cv.addEventListener('mousedown',e=>{if(e.button===0)this.mouse.l=true;if(e.button===2)this.mouse.r=true;});
-    addEventListener('mouseup',e=>{if(e.button===0)this.mouse.l=false;if(e.button===2)this.mouse.r=false;});
+
+    // контекстное меню отключаем на всём документе
+    document.addEventListener('contextmenu',e=>e.preventDefault());
+    // слушаем всё окно, а не только канвас
+    document.addEventListener('mousemove',rel);
+    document.addEventListener('mousedown',e=>{
+      if(isUI(e))return;
+      rel(e);
+      if(e.button===0)this.mouse.l=true;
+      if(e.button===2)this.mouse.r=true;
+    });
+    addEventListener('mouseup',e=>{
+      if(e.button===0)this.mouse.l=false;
+      if(e.button===2)this.mouse.r=false;
+    });
+    // если курсор покинул окно, кнопки могли не отпуститься
+    document.addEventListener('mouseleave',()=>{this.mouse.l=this.mouse.r=false;});
   }
 }
 
 // ===== Карта: каждая клетка хранит строку сторон стен ('' = пусто, 'ne' = две полоски) =====
 class GameMap{
-    constructor(o){
+  constructor(o){
     const range=(a,b)=>a+rnd(b-a+1);
     this.w=range(o.minW,o.maxW);
     this.h=range(o.minH,o.maxH);
     const{w,h}=this;
-    // 1. случайное остовное дерево (DFS): его проходы открыты, значит все клетки связаны
+
+    // 1. случайное остовное дерево (DFS) с предпочтением прямого направления: коридоры длиннее
     const vis=Array.from({length:h},()=>Array(w).fill(false));
     const wv=Array.from({length:h},()=>Array(w-1).fill(true)); // стена между (x,y) и (x+1,y)
     const wh=Array.from({length:h-1},()=>Array(w).fill(true)); // стена между (x,y) и (x,y+1)
-    const st=[[rnd(w),rnd(h)]];vis[st[0][1]][st[0][0]]=true;
+    const sx=rnd(w),sy=rnd(h);
+    const st=[[sx,sy,0,0]];vis[sy][sx]=true;
     while(st.length){
-      const[x,y]=st[st.length-1];
-      const nb=[[x+1,y],[x-1,y],[x,y+1],[x,y-1]].filter(([a,b])=>a>=0&&b>=0&&a<w&&b<h&&!vis[b][a]);
+      const[x,y,dx0,dy0]=st[st.length-1];
+      const nb=[[1,0],[-1,0],[0,1],[0,-1]]
+        .map(([dx,dy])=>[x+dx,y+dy,dx,dy])
+        .filter(([a,b])=>a>=0&&b>=0&&a<w&&b<h&&!vis[b][a]);
       if(!nb.length){st.pop();continue;}
-      const[a,b]=nb[rnd(nb.length)];
+      const straight=nb.find(n=>n[2]===dx0&&n[3]===dy0);
+      const[a,b,dx,dy]=straight&&Math.random()<0.5?straight:nb[rnd(nb.length)];
       vis[b][a]=true;
-      if(a!==x)wv[y][Math.min(x,a)]=false;else wh[Math.min(y,b)][x]=false;
-      st.push([a,b]);
+      if(dx!==0)wv[y][Math.min(x,a)]=false;else wh[Math.min(y,b)][x]=false;
+      st.push([a,b,dx,dy]);
     }
+
     // 2. счётчики стен по осям: на клетку не больше одной стены слева/справа (lr) и сверху/снизу (ud)
-    const lr=Array.from({length:h},()=>Array(w).fill(0)),ud=Array.from({length:h},()=>Array(w).fill(0));
-    for(let x=0;x<w;x++){ud[0][x]++;ud[h-1][x]++;}  // периметр сверху и снизу
-    for(let y=0;y<h;y++){lr[y][0]++;lr[y][w-1]++;}  // периметр слева и справа
-    // 3. остальные рёбра (не из дерева) становятся стенами, если не нарушают ограничения
+    const lr=Array.from({length:h},()=>Array(w).fill(0));
+    const ud=Array.from({length:h},()=>Array(w).fill(0));
+    for(let x=0;x<w;x++){ud[0][x]++;ud[h-1][x]++;} // периметр сверху и снизу
+    for(let y=0;y<h;y++){lr[y][0]++;lr[y][w-1]++;} // периметр слева и справа
+
+    // 3. дополнительные рёбра: у края стен больше, продление линий предпочтительнее
+    const nearEdge=(x,y)=>x<=1||y<=1||x>=w-2||y>=h-2;
     const cand=[];
     for(let y=0;y<h;y++)for(let x=0;x<w-1;x++)if(wv[y][x])cand.push(['v',x,y]);
     for(let y=0;y<h-1;y++)for(let x=0;x<w;x++)if(wh[y][x])cand.push(['h',x,y]);
     cand.sort(()=>Math.random()-.5);
     for(const[t,x,y]of cand){
+      const extend=t==='v'
+        ?(wv[y-1]?.[x]||wv[y+1]?.[x])
+        :(wh[y]?.[x-1]||wh[y]?.[x+1]);
+      let open=CFG.OPEN;
+      if(nearEdge(x,y))open*=0.25; // у края меньше проходов, значит больше стен
+      if(extend)open*=0.5;         // продолжаем существующую линию, а не строим ступеньку
       if(t==='v'){
-        if(lr[y][x]||lr[y][x+1]||Math.random()<CFG.OPEN){wv[y][x]=false;continue;}
+        if(lr[y][x]||lr[y][x+1]||Math.random()<open){wv[y][x]=false;continue;}
         lr[y][x]++;lr[y][x+1]++;
       }else{
-        if(ud[y][x]||ud[y+1][x]||Math.random()<CFG.OPEN){wh[y][x]=false;continue;}
+        if(ud[y][x]||ud[y+1][x]||Math.random()<open){wh[y][x]=false;continue;}
         ud[y][x]++;ud[y+1][x]++;
       }
     }
+
     // 4. строки сторон клеток
     this.g=Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>{
       let s='';
@@ -109,6 +148,7 @@ class GameMap{
       return s;
     }));
   }
+
   rects(i,j){ // прямоугольники полосок клетки (пиксели)
     const T=this.T,t=CFG.WALL_T*T,x=i*T,y=j*T,s=this.g[j][i],r=[];
     if(s.includes('n'))r.push([x,y,T,t]);
@@ -117,12 +157,15 @@ class GameMap{
     if(s.includes('e'))r.push([x+T-t,y,t,T]);
     return r;
   }
+
   inBounds(i,j){return i>=0&&j>=0&&i<this.w&&j<this.h;}
+
   pointWall(x,y){
     const i=Math.floor(x/this.T),j=Math.floor(y/this.T);
     if(!this.inBounds(i,j))return true;
     return this.rects(i,j).some(([rx,ry,rw,rh])=>x>=rx&&x<=rx+rw&&y>=ry&&y<=ry+rh);
   }
+
   circleHit(x,y,r){
     const T=this.T,x0=Math.floor((x-r)/T),x1=Math.floor((x+r)/T),y0=Math.floor((y-r)/T),y1=Math.floor((y+r)/T);
     for(let j=y0;j<=y1;j++)for(let i=x0;i<=x1;i++){
@@ -157,7 +200,11 @@ class Tank{
     }
     if(this.boost>0)this.boost-=dt;
     const maxV=CFG.MAXV*g.opts.speed*T*(this.boost>0?1.6:1);
-    this.v=thr?Math.max(-maxV,Math.min(maxV,this.v+thr*CFG.ACC*T*dt)):this.v*Math.pow(0.05,dt);
+    if(g.opts.smooth){
+      this.v=thr?Math.max(-maxV,Math.min(maxV,this.v+thr*CFG.ACC*T*dt)):this.v*Math.pow(0.05,dt);
+    }else{
+      this.v=thr*maxV; // мгновенный разгон и остановка
+    }
     const mx=Math.cos(this.a)*this.v*dt,my=Math.sin(this.a)*this.v*dt,R=this.R;
     // подшаги короче толщины стены: танк не может проскочить тонкую полоску
     const n=Math.max(1,Math.ceil(Math.hypot(mx,my)/(T*CFG.STEP))),sx=mx/n,sy=my/n;
@@ -171,10 +218,11 @@ class Tank{
         else break;
       }
     }
-    if(blocked)this.v*=0.93;
+    if(blocked&&g.opts.smooth)this.v*=0.93;
     if(fire&&!this.fireWas)this.shoot();
     this.fireWas=fire;
   }
+
   shoot(){
     if(this.g.bullets.filter(b=>b.owner===this).length>=this.ammo)return;
     const c=Math.cos(this.a),s=Math.sin(this.a),o=this.R+4;
@@ -238,12 +286,29 @@ class Game{
     const T=Math.max(8,Math.floor(Math.min((innerWidth-10)/w,(innerHeight-hudH-10)/h)));
     this.T=T;this.map.T=T;
     cv.width=w*T;cv.height=h*T;
-    const sp=[[1,1],[w-2,h-2],[w-2,1],[1,h-2]]; // спавны в углах
+
+    // спавн: случайные клетки, но не ближе заданного расстояния друг к другу
+    const n=this.players.length;
+    const all=[];
+    for(let j=0;j<h;j++)for(let i=0;i<w;i++)all.push([i,j]);
+    let minD=Math.min(w,h)/2; // минимальное расстояние между танками в клетках
+    let spots=[];
+    do{
+      spots=[];
+      const cand=all.slice().sort(()=>Math.random()-.5);
+      for(const[i,j]of cand){
+        if(spots.length===n)break;
+        if(spots.every(([a,b])=>Math.hypot(a-i,b-j)>=minD))spots.push([i,j]);
+      }
+      minD*=0.9; // если места мало, немного ослабляем ограничение
+    }while(spots.length<n&&minD>0.5);
+
     this.tanks=this.players.map((p,i)=>{
-      const x=(sp[i][0]+.5)*T,y=(sp[i][1]+.5)*T;
+      const x=(spots[i][0]+.5)*T,y=(spots[i][1]+.5)*T;
       const t=new Tank(this,x,y,p.color,p.ctrl,p.name);
       t.a=Math.atan2(h*T/2-y,w*T/2-x);return t;
     });
+
     this.bullets=[];this.bonuses=[];this.bt=0;this.ht=0;this.grace=null;
     this.running=true;this.last=performance.now();
     msg.classList.add('hide');
@@ -307,26 +372,29 @@ class Game{
   }
   scoreText(){return this.players.map((p,i)=>`${p.name}: ${this.scores[i]}`).join(' | ');}
     spawnBonus(){
-    const max=CFG.MAX_BONUS;
-    if(max===0||(max>0&&this.bonuses.length>=max))return; // 0 — бонусов нет, -1 — без ограничений
-    const m=this.map,T=this.T,types=Object.keys(BTYPES);
-    for(let k=0;k<50;k++){
-      const i=rnd(m.w),j=rnd(m.h);
-      if(m.g[j][i])continue; // клетка со стенами не подходит
-      const x=(i+.5)*T,y=(j+.5)*T;
-      if(this.tanks.some(t=>t.alive&&Math.hypot(t.x-x,t.y-y)<T))continue;
-      this.bonuses.push({x,y,type:types[rnd(3)],life:CFG.BONUS_LIFE});return;
+      const max=CFG.MAX_BONUS;
+      if(max===0||(max>0&&this.bonuses.length>=max))return; // 0 — бонусов нет, -1 — без ограничений
+      const m=this.map,T=this.T,types=Object.keys(BTYPES);
+      const free=[];
+      for(let j=0;j<m.h;j++)for(let i=0;i<m.w;i++){
+        const x=(i+.5)*T,y=(j+.5)*T;
+        if(this.tanks.some(t=>t.alive&&Math.hypot(t.x-x,t.y-y)<T))continue;
+        if(this.bonuses.some(b=>b.x===x&&b.y===y))continue;
+        free.push([x,y]);
+      }
+      if(!free.length)return;
+      const[x,y]=free[rnd(free.length)];
+      this.bonuses.push({x,y,type:types[rnd(types.length)],life:CFG.BONUS_LIFE});
     }
-  }
-  applyBonus(b,t){
-    if(b.type==='hp')t.hp=Math.min(this.opts.hp+2,t.hp+1);
-    if(b.type==='speed')t.boost=CFG.BOOST;
-    if(b.type==='ammo')t.ammo=Math.min(this.opts.ammo+2,t.ammo+1);
-  }
+    applyBonus(b,t){
+      if(b.type==='hp')t.hp+=1;
+      if(b.type==='speed')t.boost=CFG.BOOST;
+      if(b.type==='ammo')t.ammo+=1;
+    }
   draw(){
     const T=this.T,m=this.map,c=ctx;
-    c.fillStyle='#4a4a4a';c.fillRect(0,0,cv.width,cv.height);
-    c.fillStyle='#8b5a2b';
+    c.fillStyle=this.opts.floor;c.fillRect(0,0,cv.width,cv.height);
+    c.fillStyle=this.opts.wall;
     for(let j=0;j<m.h;j++)for(let i=0;i<m.w;i++)
       for(const[x,y,w,h]of m.rects(i,j))c.fillRect(x,y,w,h);
     c.textAlign='center';c.textBaseline='middle';
@@ -337,6 +405,7 @@ class Game{
     this.tanks.forEach(t=>t.draw(c));
     this.bullets.forEach(b=>b.draw(c));
   }
+
   hud(){
     const grace=this.grace!==null&&this.grace>0?`<span>Раунд завершится через ${this.grace.toFixed(1)} с</span>`:'';
     hudEl.innerHTML=this.tanks.map((t,i)=>
@@ -373,36 +442,99 @@ function linkRange(minId,maxId){
 }
 linkRange('minW','maxW');linkRange('minH','maxH');
 
+// ===== Сохранение настроек в cookie =====
+const SETTING_IDS=['cnt','tgt','hp','ammo','speed','smooth','floorColor','wallColor','bltime','minW','maxW','minH','maxH'];
+const DEFAULTS={cnt:3,tgt:3,hp:3,ammo:3,speed:1,smooth:0,floorColor:'#77767b',wallColor:'#5e5c64',bltime:5,minW:7,maxW:16,minH:7,maxH:16};
+const COOKIE_DAYS=365;
+
+function setCookie(name,val){
+  document.cookie=`${encodeURIComponent(name)}=${encodeURIComponent(val)};max-age=${COOKIE_DAYS*86400};path=/;SameSite=Lax`;
+}
+function getCookie(name){
+  const m=document.cookie.split('; ').find(c=>c.startsWith(encodeURIComponent(name)+'='));
+  return m?decodeURIComponent(m.split('=')[1]):null;
+}
+function saveSettings(){
+  SETTING_IDS.forEach(id=>setCookie('t_'+id,document.getElementById(id).value));
+  setCookie('t_colors',picked.join(','));
+}
+function applySettings(values,colors){
+  for(const id of SETTING_IDS){
+    const el=document.getElementById(id);
+    const v=values[id];
+    if(v===undefined||v===null)continue;
+    if(el.tagName==='SELECT'){
+      if([...el.options].some(o=>o.value===String(v)))el.value=String(v);
+    }else el.value=String(v);
+  }
+  if(colors)colors.forEach((c,i)=>{if(/^#[0-9a-f]{6}$/i.test(c))picked[i]=c;});
+  renderCols();
+}
+function loadSettings(){
+  const values={};
+  SETTING_IDS.forEach(id=>{const v=getCookie('t_'+id);if(v!==null)values[id]=v;});
+  const colors=getCookie('t_colors');
+  applySettings(values,colors?colors.split(','):null);
+}
+function resetSettings(){
+  applySettings(DEFAULTS,null);
+  picked.splice(0,picked.length,...COLORS);
+  renderCols();
+  saveSettings();
+}
+
+// сохраняем при любом изменении в меню (события всплывают из select, input и цветов игроков)
+menu.addEventListener('change',saveSettings);
+menu.addEventListener('input',e=>{if(e.target.type==='color')saveSettings();});
+document.getElementById('reset').onclick=resetSettings;
+
+loadSettings();
+
 document.getElementById('start').onclick=()=>{
-  const n=+cnt.value,target=+document.getElementById('tgt').value;
-  const opts={
-    hp:+document.getElementById('hp').value,
-    ammo:+document.getElementById('ammo').value,
-    speed:+document.getElementById('speed').value,
-    bulletLife:+document.getElementById('bltime').value,
-    minW:+document.getElementById('minW').value,
-    maxW:+document.getElementById('maxW').value,
-    minH:+document.getElementById('minH').value,
-    maxH:+document.getElementById('maxH').value};
-  // WASD+Q, стрелки+M, IJKL+Y, мышь (ЛКМ огонь, ПКМ движение)
-  const WASD=KEYS[0],ARROWS=KEYS[1],IJKL=KEYS[2],MOUSE={mouse:true};
-  const layouts={2:[WASD,ARROWS],3:[WASD,ARROWS,MOUSE],4:[WASD,IJKL,ARROWS,MOUSE]};
-  const players=layouts[n].map((ctrl,i)=>({
-    name:ctrl.mouse?`Игрок ${i+1} (мышь)`:`Игрок ${i+1}`,
-    color:picked[i],
-    ctrl}));
-  menu.classList.add('hide');
-  game.start(players,target,opts);
+ const n=+cnt.value,target=+document.getElementById('tgt').value;
+ const opts={
+   hp:+document.getElementById('hp').value,
+   ammo:+document.getElementById('ammo').value,
+   speed:+document.getElementById('speed').value,
+   bulletLife:+document.getElementById('bltime').value,
+   minW:+document.getElementById('minW').value,
+   maxW:+document.getElementById('maxW').value,
+   minH:+document.getElementById('minH').value,
+   maxH:+document.getElementById('maxH').value,
+   smooth:document.getElementById('smooth').value==='1',
+   floor:document.getElementById('floorColor').value,
+   wall:document.getElementById('wallColor').value};
+ // WASD+Q, стрелки+M, IJKL+Y, мышь (ЛКМ огонь, ПКМ движение)
+ const WASD=KEYS[0],ARROWS=KEYS[1],IJKL=KEYS[2],MOUSE={mouse:true};
+ const layouts={2:[WASD,ARROWS],3:[WASD,ARROWS,MOUSE],4:[WASD,IJKL,ARROWS,MOUSE]};
+ const players=layouts[n].map((ctrl,i)=>({
+   name:ctrl.mouse?`Игрок ${i+1} (мышь)`:`Игрок ${i+1}`,
+   color:picked[i],
+   ctrl}));
+ menu.classList.add('hide');
+ game.start(players,target,opts);
 };
+
 document.getElementById('again').onclick=()=>{
   over.classList.add('hide');menu.classList.remove('hide');
 };
 
-// ===== Esc: подтверждение выхода в меню =====
+// ===== Ё: подтверждение выхода в меню =====
 addEventListener('keydown',e=>{
-  if(e.code==='Escape'&&game.active&&!e.repeat){
+  if(e.code==='Backquote'&&game.active&&!e.repeat){
     if(confirm('Выйти в меню? Текущая партия будет потеряна.'))game.toMenu();
   }
 });
+
+// ===== Полноэкранный режим =====
+const fsBtn=document.getElementById('fs');
+fsBtn.onclick=()=>{
+  if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});
+  else document.exitFullscreen();
+};
+document.addEventListener('fullscreenchange',()=>{
+  fsBtn.textContent=document.fullscreenElement?'Выйти из полного экрана':'На весь экран';
+});
+
 </script>
 </body></html>
