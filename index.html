@@ -10,6 +10,8 @@ button{padding:10px 24px;font-size:18px;cursor:pointer}
 #msg{position:fixed;top:40%;left:0;right:0;text-align:center;font-size:28px;pointer-events:none;text-shadow:0 0 6px #000}
 small{color:#aaa;max-width:600px;text-align:center}
 select{font-size:15px;padding:2px}
+.nm{width:120px;font-size:14px;padding:2px}
+.sw{width:32px;height:26px;padding:0;border:none;cursor:pointer;vertical-align:middle}
 </style></head><body>
 <div id="menu" class="ov">
   <h1>Танки</h1>
@@ -24,27 +26,50 @@ select{font-size:15px;padding:2px}
   <label>Время жизни пули: <select id="bltime"><option>1</option><option>2</option><option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option></select> с</label>
   <label>Ширина карты: от <select id="minW"></select> до <select id="maxW"></select></label>
   <label>Длина карты: от <select id="minH"></select> до <select id="maxH"></select></label>
+  <label>Имена игроков над танками: <select id="names"><option value="0" selected>выключено</option><option value="1">включено</option></select></label>
   <div id="cols"></div>
   <button id="start">Старт</button>
   <button id="reset">Сбросить настройки</button>
   <small>2 игрока: WASD + Q и стрелки + M · 3 игрока: WASD + Q, стрелки + M, мышь (ЛКМ огонь, ПКМ движение) · 4 игрока: WASD + Q, IJKL + Y, стрелки + M, мышь<br>Ё во время игры — выход в меню.</small>
 </div>
 <div id="over" class="ov hide"><h2 id="win"></h2><p id="fin"></p><button id="again">В меню</button></div>
+<div id="ask" class="ov hide" style="z-index:10"><h2>Выйти в меню?</h2><p>Текущая партия будет потеряна.</p><div style="display:flex;gap:12px"><button id="askYes">Да</button><button id="askNo">Нет</button></div></div>
 <div id="msg" class="hide"></div>
 <div id="hud"></div>
 <canvas id="cv"></canvas>
 <button id="fs" style="position:fixed;right:10px;bottom:10px;z-index:5;padding:6px 12px;font-size:14px">На весь экран</button>
 <script>
+
 // ===== Конфигурация =====
-const CFG={MAXV:3.0,ACC:3.5,BSPEED:5,TURN:4.5,LIFE:60,BONUS_EVERY:5,BONUS_LIFE:15,MAX_BONUS:-1,BOOST:8,GRACE:3,NEXT_ROUND:2500,
-  WALL_T:0.12,OPEN:0.2,STEP:0.05};
+const CFG = {
+  MAXV: 3,              // базовая скорость танка (клеток в секунду)
+  ACC: 3,               // ускорение танка при плавном движении
+  BSPEED: 8,            // скорость пули (умножается на T)
+  TURN: 5,              // скорость поворота танка (рад/с)
+  LIFE: 5,              // время жизни пули (с), задаётся из меню
+  BONUS_EVERY: 5,       // интервал появления бонуса (с)
+  BONUS_LIFE: 10,       // время, которое бонус лежит на карте (с)
+  MAX_BONUS: -1,        // -1 — без ограничений, 0 — бонусов нет, N — максимум N
+  BOOST: 5,             // длительность ускорения от бонуса Speed (с)
+  GRACE: 3,             // задержка перед концом раунда (с)
+  NEXT_ROUND: 2500,     // пауза между раундами (мс)
+  WALL_T: 0.12,         // толщина стены в долях T
+  OPEN: 0.3,            // доля дополнительных проходов в стенах
+  STEP: 0.1,            // шаг подсчёта движения в долях T (должен быть меньше WALL_T)
+  NUKE_LIFE: 15,        // время до автоматического взрыва бомбы (с)
+  NUKE_SHARDS: 25,      // количество осколков при взрыве
+  SHARD_SPEED: 4,       // скорость осколков (умножается на T)
+  SHARD_LIFE: 4,        // время жизни осколка (с)
+  BULLET_R: 4,          // радиус пули (px), должен совпадать с Bullet
+  BOMB_SCALE: 2         // во сколько раз бомба больше пули
+};
 const SIDES=['n','e','s','w','c'];
 const KEYS=[
   {u:'KeyW',d:'KeyS',l:'KeyA',r:'KeyD',f:'KeyQ'},
   {u:'ArrowUp',d:'ArrowDown',l:'ArrowLeft',r:'ArrowRight',f:'KeyM'},
   {u:'KeyI',d:'KeyK',l:'KeyJ',r:'KeyL',f:'KeyY'}];
 const COLORS=['#e74c3c','#3498db','#2ecc71','#f1c40f'];
-const BTYPES={hp:{c:'#e91e63',s:'+'},speed:{c:'#00bcd4',s:'»'},ammo:{c:'#ff9800',s:'•'}};
+const BTYPES={hp:{c:'#e91e63',s:'+'},speed:{c:'#00bcd4',s:'»'},ammo:{c:'#ff9800',s:'•'},nuke:{c:'#ff0000',s:'Я'}};
 const rnd=n=>Math.floor(Math.random()*n);
 const norm=a=>Math.atan2(Math.sin(a),Math.cos(a));
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
@@ -158,6 +183,20 @@ class GameMap{
     return r;
   }
 
+    breakAt(x,y){ // ломает внутреннюю стену под точкой; true — точка на внешней стене или за картой
+    const T=this.T,t=CFG.WALL_T*T,i=Math.floor(x/T),j=Math.floor(y/T),s=this.g[j]?.[i];
+    if(s===undefined)return true;
+    const bx=x-i*T,by=y-j*T;
+    const hit=[['n',by<t],['s',by>T-t],['w',bx<t],['e',bx>T-t]].find(([k,c])=>c&&s.includes(k));
+    if(!hit)return false;
+    const k=hit[0],[dx,dy,opp]={n:[0,-1,'s'],s:[0,1,'n'],w:[-1,0,'e'],e:[1,0,'w']}[k];
+    const ni=i+dx,nj=j+dy;
+    if(!this.inBounds(ni,nj))return true; // внешняя стена
+    this.g[j][i]=s.replace(k,'');
+    this.g[nj][ni]=this.g[nj][ni].replace(opp,'');
+    return false;
+  }
+
   inBounds(i,j){return i>=0&&j>=0&&i<this.w&&j<this.h;}
 
   pointWall(x,y){
@@ -182,7 +221,7 @@ class GameMap{
 // ===== Танк =====
 class Tank{
   constructor(g,x,y,color,ctrl,name){
-    Object.assign(this,{g,x,y,color,ctrl,name,a:0,v:0,hp:g.opts.hp,ammo:g.opts.ammo,boost:0,alive:true,fireWas:false});
+    Object.assign(this,{g,x,y,color,ctrl,name,a:0,v:0,hp:g.opts.hp,ammo:g.opts.ammo,boost:0,alive:true,fireWas:false,nukes:0,bomb:null});
   }
   get R(){return this.g.T/4;}
   update(dt){
@@ -223,7 +262,16 @@ class Tank{
     this.fireWas=fire;
   }
 
+  die(){
+    this.alive=false;
+    this.hp=0;
+    this.v=0;
+    this.bomb=null;
+  }
+
   shoot(){
+    if(this.bomb&&!this.bomb.dead){this.bomb.explode(this.g);return;} // повторный выстрел взрывает бомбу
+    if(this.nukes>0){this.nukes--;this.bomb=this.g.launchBomb(this);return;}
     if(this.g.bullets.filter(b=>b.owner===this).length>=this.ammo)return;
     const c=Math.cos(this.a),s=Math.sin(this.a),o=this.R+4;
     this.g.bullets.push(new Bullet(this,this.x+c*o,this.y+s*o,c,s));
@@ -237,6 +285,13 @@ class Tank{
     c.fillStyle='#222';c.fillRect(-T*0.1,-T*0.1,T*0.2,T*0.2);                // башня
     c.fillRect(0,-T*0.03,T*0.25,T*0.06);                                      // дуло
     c.restore();
+    if(this.label){
+      c.save();c.font=`bold ${T*0.22}px Arial`;c.textAlign='center';c.textBaseline='bottom';
+      c.lineWidth=3;c.strokeStyle='#000';c.fillStyle=this.labelColor;
+      c.strokeText(this.label,this.x,this.y-T*0.3);
+      c.fillText(this.label,this.x,this.y-T*0.3);
+      c.restore();
+    }
   }
 }
 
@@ -270,9 +325,65 @@ class Bullet{
   draw(c){c.fillStyle=this.owner.color;c.beginPath();c.arc(this.x,this.y,3,0,7);c.fill();}
 }
 
+// ===== Ядерная бомба =====
+class Bomb{
+  constructor(owner,x,y,dx,dy){
+    const s=CFG.BSPEED*owner.g.T/3;
+    Object.assign(this,{owner,x,y,vx:dx*s,vy:dy*s,life:CFG.NUKE_LIFE,dead:false,
+      R:CFG.BULLET_R*CFG.BOMB_SCALE});
+    this.r = Bullet.R * CFG.BOMB_SCALE;
+  }
+  update(dt,g){
+    if((this.life-=dt)<=0)return this.explode(g);
+    const T=g.T,n=Math.max(1,Math.ceil(Math.hypot(this.vx,this.vy)*dt/(T*CFG.STEP))),sdt=dt/n;
+    for(let k=0;k<n&&!this.dead;k++){
+      const nx=this.x+this.vx*sdt,ny=this.y+this.vy*sdt;
+      const hx=g.map.circleHit(nx,this.y,this.R),hy=g.map.circleHit(this.x,ny,this.R);
+      const hd=!hx&&!hy&&g.map.circleHit(nx,ny,this.R);
+      if(hx||hy||hd){if(hx||hd)this.vx=-this.vx;if(hy||hd)this.vy=-this.vy;continue;}
+      this.x=nx;this.y=ny;
+    }
+  }
+  explode(g){
+    if(this.dead)return;
+    this.dead=true;
+    new Audio('bomb1.mp3').play().catch(()=>{}); // **звук один раз**
+    g.stopAlarm();
+    const T=g.T;
+    for(let k=0;k<CFG.NUKE_SHARDS;k++){
+      const a=Math.random()*Math.PI*2,sp=CFG.SHARD_SPEED*T*(0.5+Math.random());
+      g.shards.push(new Shard(this.x,this.y,Math.cos(a)*sp,Math.sin(a)*sp,a,T));
+    }
+  }
+  draw(c){
+    const gr=c.createRadialGradient(this.x,this.y,this.R*0.2,this.x,this.y,this.R);
+    gr.addColorStop(0,'#ff8a80');gr.addColorStop(1,'#b71c1c');
+    c.fillStyle=gr;c.beginPath();c.arc(this.x,this.y,this.R,0,7);c.fill();
+  }
+}
+
+// ===== Осколок-треугольник =====
+class Shard{
+  constructor(x,y,vx,vy,a,T){Object.assign(this,{x,y,vx,vy,a,T,life:CFG.SHARD_LIFE,dead:false});}
+  update(dt,g){
+    if((this.life-=dt)<=0){this.dead=true;return;}
+    const n=Math.max(1,Math.ceil(Math.hypot(this.vx,this.vy)*dt/(g.T*CFG.STEP))),sdt=dt/n;
+    for(let k=0;k<n&&!this.dead;k++){
+      this.x+=this.vx*sdt;this.y+=this.vy*sdt;
+      if(g.map.breakAt(this.x,this.y))this.dead=true;
+    }
+  }
+  draw(c){
+    c.save();c.translate(this.x,this.y);c.rotate(this.a);
+    c.fillStyle='#ffb300';c.beginPath();
+    c.moveTo(this.T*0.12,0);c.lineTo(-this.T*0.08,this.T*0.06);c.lineTo(-this.T*0.08,-this.T*0.06);
+    c.fill();c.restore();
+  }
+}
+
 // ===== Игра (матч из нескольких раундов) =====
 class Game{
-  constructor(){this.input=new Input();this.active=false;this.timer=null;}
+  constructor(){this.input=new Input();this.active=false;this.timer=null;this.paused=false;}
   start(players,target,opts){
     this.players=players;this.target=target;this.opts=opts;
     this.scores=players.map(()=>0);
@@ -306,10 +417,11 @@ class Game{
     this.tanks=this.players.map((p,i)=>{
       const x=(spots[i][0]+.5)*T,y=(spots[i][1]+.5)*T;
       const t=new Tank(this,x,y,p.color,p.ctrl,p.name);
+      t.label=p.label;t.labelColor=p.labelColor;
       t.a=Math.atan2(h*T/2-y,w*T/2-x);return t;
     });
 
-    this.bullets=[];this.bonuses=[];this.bt=0;this.ht=0;this.grace=null;
+    this.bullets=[];this.bonuses=[];this.bombs=[];this.shards=[];this.bt=0;this.ht=0;this.grace=null;this.stopAlarm();
     this.running=true;this.last=performance.now();
     msg.classList.add('hide');
     this.hud();
@@ -321,13 +433,51 @@ class Game{
   }
   loop(now){
     const dt=Math.min((now-this.last)/1000,0.05);this.last=now;
-    this.update(dt);this.draw();
+    if(!this.paused)this.update(dt);this.draw();
     if(this.running)requestAnimationFrame(t=>this.loop(t));
   }
+
+  bombsHitTanks(){
+    for(const b of this.bombs){
+      if(b.dead)continue;
+      for(const t of this.tanks){
+        if(!t.alive)continue;
+        const d=Math.hypot(t.x-b.x,t.y-b.y);
+        if(t===b.owner){
+          if(d>t.R+b.R)b.armed=true; // **владелец защищён, пока бомба рядом с ним**
+          if(!b.armed)continue;
+        }
+        if(d<t.R+b.R){
+          b.explode(this); // **взрыв при касании любого танка**
+          break;
+        }
+      }
+    }
+  }
+
+  killTanksByShards(){
+    for(const s of this.shards){
+      for(const t of this.tanks){
+        if(!t.alive)continue;
+        if(Math.hypot(t.x-s.x,t.y-s.y)<t.R+(s.R||2)){
+          t.die(); // **танк уничтожается сразу, здоровье не учитывается**
+        }
+      }
+    }
+  }
+
   update(dt){
     this.tanks.forEach(t=>t.update(dt));
     this.bullets.forEach(b=>b.update(dt,this));
     this.bullets=this.bullets.filter(b=>!b.dead);
+    this.bombs.forEach(b=>b.update(dt,this));
+    this.bombs=this.bombs.filter(b=>!b.dead);
+    this.bombsHitTanks();
+    this.shards.forEach(s=>s.update(dt,this));
+    this.shards=this.shards.filter(s=>!s.dead);
+    this.killTanksByShards();
+    if(!this.bombs.length)this.stopAlarm();
+
     if((this.bt+=dt)>=CFG.BONUS_EVERY){this.bt=0;this.spawnBonus();}
     this.bonuses=this.bonuses.filter(b=>{
       b.life-=dt;
@@ -346,6 +496,7 @@ class Game{
   }
   endRound(w){
     this.running=false;this.hud();
+    this.stopAlarm();
     let text;
     if(w){
       this.scores[this.tanks.indexOf(w)]++;
@@ -366,6 +517,7 @@ class Game{
   }
   toMenu(){
     this.active=false;this.running=false;
+    this.stopAlarm()
     clearTimeout(this.timer);
     msg.classList.add('hide');over.classList.add('hide');
     menu.classList.remove('hide');
@@ -390,7 +542,20 @@ class Game{
       if(b.type==='hp')t.hp+=1;
       if(b.type==='speed')t.boost=CFG.BOOST;
       if(b.type==='ammo')t.ammo+=1;
+      if(b.type==='nuke')t.nukes++;
     }
+
+  launchBomb(t){
+    const c=Math.cos(t.a),s=Math.sin(t.a),o=t.R+this.T*0.25+2;
+    const b=new Bomb(t,t.x+c*o,t.y+s*o,c,s);
+    this.bombs.push(b);this.startAlarm();return b;
+  }
+  startAlarm(){
+    if(this.alarm)return;
+    this.alarm=new Audio('alert1.mp3');this.alarm.loop=true;this.alarm.play().catch(()=>{});
+  }
+  stopAlarm(){if(this.alarm){this.alarm.pause();this.alarm=null;}}
+
   draw(){
     const T=this.T,m=this.map,c=ctx;
     c.fillStyle=this.opts.floor;c.fillRect(0,0,cv.width,cv.height);
@@ -399,11 +564,19 @@ class Game{
       for(const[x,y,w,h]of m.rects(i,j))c.fillRect(x,y,w,h);
     c.textAlign='center';c.textBaseline='middle';
     for(const b of this.bonuses){
-      c.fillStyle=BTYPES[b.type].c;c.beginPath();c.arc(b.x,b.y,T*0.25,0,7);c.fill();
-      c.fillStyle='#fff';c.font=`bold ${T*0.3}px Arial`;c.fillText(BTYPES[b.type].s,b.x,b.y);
+      const d=BTYPES[b.type];c.fillStyle=d.c;
+      if(b.type==='nuke')c.fillRect(b.x-T*0.25,b.y-T*0.25,T*0.5,T*0.5);
+      else{c.beginPath();c.arc(b.x,b.y,T*0.25,0,7);c.fill();}
+      c.fillStyle='#fff';c.font=`bold ${T*0.3}px Arial`;c.fillText(d.s,b.x,b.y);
     }
     this.tanks.forEach(t=>t.draw(c));
     this.bullets.forEach(b=>b.draw(c));
+    this.bombs.forEach(b=>b.draw(c));
+    this.shards.forEach(s=>s.draw(c));
+    if(this.bombs.length&&Math.floor(performance.now()/300)%2){
+      c.fillStyle='#ff1744';c.font=`bold ${Math.min(cv.width/16,56)}px Arial`;
+      c.fillText('ВНИМАНИЕ! ЯДЕРНАЯ УГРОЗА',cv.width/2,cv.height/2);
+    }
   }
 
   hud(){
@@ -417,16 +590,27 @@ class Game{
 const game=new Game();
 const cols=document.getElementById('cols'),cnt=document.getElementById('cnt');
 const picked=[...COLORS];
+const nameTxt=[],nameCol=[];
 function renderCols(){
-  const n=+cnt.value;cols.innerHTML='';
+  const n=+cnt.value,on=document.getElementById('names').value==='1';cols.innerHTML='';
   for(let i=0;i<n;i++){
     const l=document.createElement('label');l.style.margin='6px';
     l.innerHTML=`Игрок ${i+1} <input type="color" value="${picked[i]}">`;
     l.querySelector('input').oninput=e=>picked[i]=e.target.value;
     cols.appendChild(l);
+    if(on){
+      const t=document.createElement('input');
+      t.type='text';t.maxLength=16;t.className='nm';t.placeholder=`Игрок ${i+1}`;t.value=nameTxt[i]||'';
+      const c=document.createElement('input');
+      c.type='color';c.className='sw';c.title='Цвет текста';c.value=nameCol[i]||'#ffffff';
+      t.oninput=()=>{nameTxt[i]=t.value;saveSettings();};
+      c.oninput=()=>{nameCol[i]=c.value;saveSettings();};
+      cols.append(t,c);
+    }
   }
 }
 cnt.onchange=renderCols;renderCols();
+document.getElementById('names').onchange=renderCols;
 
 // Размеры карты: от 5 до 24 клеток, минимум не может превышать максимум
 const SIZES=Array.from({length:20},(_,i)=>i+5);
@@ -443,9 +627,9 @@ function linkRange(minId,maxId){
 linkRange('minW','maxW');linkRange('minH','maxH');
 
 // ===== Сохранение настроек в cookie =====
-const SETTING_IDS=['cnt','tgt','hp','ammo','speed','smooth','floorColor','wallColor','bltime','minW','maxW','minH','maxH'];
-const DEFAULTS={cnt:3,tgt:3,hp:3,ammo:3,speed:1,smooth:0,floorColor:'#77767b',wallColor:'#5e5c64',bltime:5,minW:7,maxW:16,minH:7,maxH:16};
-const COOKIE_DAYS=365;
+const SETTING_IDS=['cnt','tgt','hp','ammo','speed','smooth','floorColor','wallColor','bltime','minW','maxW','minH','maxH','names'];
+const DEFAULTS={cnt:3,tgt:3,hp:3,ammo:3,speed:1,smooth:0,floorColor:'#77767b',wallColor:'#5e5c64',bltime:5,minW:7,maxW:16,minH:7,maxH:16,names:0};
+const COOKIE_DAYS=3650;
 
 function setCookie(name,val){
   document.cookie=`${encodeURIComponent(name)}=${encodeURIComponent(val)};max-age=${COOKIE_DAYS*86400};path=/;SameSite=Lax`;
@@ -457,8 +641,10 @@ function getCookie(name){
 function saveSettings(){
   SETTING_IDS.forEach(id=>setCookie('t_'+id,document.getElementById(id).value));
   setCookie('t_colors',picked.join(','));
+  setCookie('t_nameTxt',JSON.stringify(nameTxt));
+  setCookie('t_nameCol',JSON.stringify(nameCol));
 }
-function applySettings(values,colors){
+function applySettings(values,colors,names,nameColors){
   for(const id of SETTING_IDS){
     const el=document.getElementById(id);
     const v=values[id];
@@ -468,16 +654,20 @@ function applySettings(values,colors){
     }else el.value=String(v);
   }
   if(colors)colors.forEach((c,i)=>{if(/^#[0-9a-f]{6}$/i.test(c))picked[i]=c;});
+  nameTxt.splice(0,nameTxt.length,...(names||[]));
+  nameCol.splice(0,nameCol.length,...(nameColors||[]));
   renderCols();
 }
 function loadSettings(){
   const values={};
   SETTING_IDS.forEach(id=>{const v=getCookie('t_'+id);if(v!==null)values[id]=v;});
   const colors=getCookie('t_colors');
-  applySettings(values,colors?colors.split(','):null);
+  const names=JSON.parse(getCookie('t_nameTxt')||'[]');
+  const nameColors=JSON.parse(getCookie('t_nameCol')||'[]');
+  applySettings(values,colors?colors.split(','):null,names,nameColors);
 }
 function resetSettings(){
-  applySettings(DEFAULTS,null);
+  applySettings(DEFAULTS,null,[],[]);
   picked.splice(0,picked.length,...COLORS);
   renderCols();
   saveSettings();
@@ -485,7 +675,7 @@ function resetSettings(){
 
 // сохраняем при любом изменении в меню (события всплывают из select, input и цветов игроков)
 menu.addEventListener('change',saveSettings);
-menu.addEventListener('input',e=>{if(e.target.type==='color')saveSettings();});
+menu.addEventListener('input',e=>{if(e.target.type==='color'||e.target.type==='text')saveSettings();});
 document.getElementById('reset').onclick=resetSettings;
 
 loadSettings();
@@ -507,10 +697,17 @@ document.getElementById('start').onclick=()=>{
  // WASD+Q, стрелки+M, IJKL+Y, мышь (ЛКМ огонь, ПКМ движение)
  const WASD=KEYS[0],ARROWS=KEYS[1],IJKL=KEYS[2],MOUSE={mouse:true};
  const layouts={2:[WASD,ARROWS],3:[WASD,ARROWS,MOUSE],4:[WASD,IJKL,ARROWS,MOUSE]};
- const players=layouts[n].map((ctrl,i)=>({
-   name:ctrl.mouse?`Игрок ${i+1} (мышь)`:`Игрок ${i+1}`,
-   color:picked[i],
-   ctrl}));
+ const names=document.getElementById('names').value==='1';
+ const players=layouts[n].map((ctrl,i)=>{
+   const custom=names?(nameTxt[i]||'').trim():'';
+   const title=custom||`Игрок ${i+1}`;
+   return{
+     name:title,
+     color:picked[i],
+     ctrl,
+     label:names?title:null,
+     labelColor:nameCol[i]||'#ffffff'};
+ });
  menu.classList.add('hide');
  game.start(players,target,opts);
 };
@@ -519,12 +716,16 @@ document.getElementById('again').onclick=()=>{
   over.classList.add('hide');menu.classList.remove('hide');
 };
 
-// ===== Ё: подтверждение выхода в меню =====
+// ===== Ё: собственное окно подтверждения выхода в меню =====
+const ask=document.getElementById('ask');
+function openAsk(){ask.classList.remove('hide');game.paused=true;}
+function closeAsk(){ask.classList.add('hide');game.paused=false;}
 addEventListener('keydown',e=>{
-  if(e.code==='Backquote'&&game.active&&!e.repeat){
-    if(confirm('Выйти в меню? Текущая партия будет потеряна.'))game.toMenu();
-  }
+  if(e.code!=='Backquote'||e.repeat||!game.active)return;
+  if(ask.classList.contains('hide'))openAsk();else closeAsk();
 });
+document.getElementById('askYes').onclick=()=>{closeAsk();game.toMenu();};
+document.getElementById('askNo').onclick=closeAsk;
 
 // ===== Полноэкранный режим =====
 const fsBtn=document.getElementById('fs');
