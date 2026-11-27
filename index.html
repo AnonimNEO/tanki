@@ -61,7 +61,8 @@ const CFG = {
   SHARD_SPEED: 4,       // скорость осколков (умножается на T)
   SHARD_LIFE: 4,        // время жизни осколка (с)
   BULLET_R: 4,          // радиус пули (px), должен совпадать с Bullet
-  BOMB_SCALE: 2         // во сколько раз бомба больше пули
+  BOMB_SCALE: 2,        // во сколько раз бомба больше пули
+  FPS_CAP: 100          // **максимальная частота кадров**
 };
 const SIDES=['n','e','s','w','c'];
 const KEYS=[
@@ -383,7 +384,28 @@ class Shard{
 
 // ===== Игра (матч из нескольких раундов) =====
 class Game{
-  constructor(){this.input=new Input();this.active=false;this.timer=null;this.paused=false;}
+  constructor(){
+    this.input=new Input();this.active=false;this.timer=null;this.paused=false;
+    this.showFps=false;this.frames=0;this.fpsT=0;
+    this.fpsEl=document.createElement('div');
+    Object.assign(this.fpsEl.style,{position:'fixed',left:'8px',bottom:'8px',
+      font:'bold 14px monospace',color:'#0f0',background:'rgba(0,0,0,.5)',
+      padding:'2px 6px',borderRadius:'4px',pointerEvents:'none',display:'none',zIndex:'1000'});
+    document.body.appendChild(this.fpsEl);
+    window.addEventListener('keydown',e=>{
+      if(e.code==='KeyF'&&!e.repeat){
+        this.showFps=!this.showFps;   // **F включает и выключает счётчик**
+        this.fpsEl.style.display=this.showFps?'block':'none';
+      }
+    });
+  }
+  countFps(el){
+    this.frames++;this.fpsT+=el;
+    if(this.fpsT>=500){
+      if(this.showFps)this.fpsEl.textContent=`FPS: ${Math.round(this.frames*1000/this.fpsT)}`;
+      this.frames=0;this.fpsT=0;
+    }
+  }
   start(players,target,opts){
     this.players=players;this.target=target;this.opts=opts;
     this.scores=players.map(()=>0);
@@ -432,9 +454,12 @@ class Game{
     return this.tanks.every(t=>t===self||!t.alive||Math.hypot(t.x-x,t.y-y)>=t.R+r);
   }
   loop(now){
-    const dt=Math.min((now-this.last)/1000,0.05);this.last=now;
+    if(!this.running)return;
+    requestAnimationFrame(t=>this.loop(t));
+    const el=now-this.last;
+    const dt=Math.min(el/1000,0.05);this.last=now;
     if(!this.paused)this.update(dt);this.draw();
-    if(this.running)requestAnimationFrame(t=>this.loop(t));
+    this.countFps(el);
   }
 
   bombsHitTanks(){
