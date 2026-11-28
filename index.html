@@ -40,29 +40,34 @@ select{font-size:15px;padding:2px}
 <button id="fs" style="position:fixed;right:10px;bottom:10px;z-index:5;padding:6px 12px;font-size:14px">На весь экран</button>
 <script>
 
-// ===== Конфигурация =====
+// === Конфигурация ===
 const CFG = {
-  MAXV: 3,              // базовая скорость танка (клеток в секунду)
-  ACC: 3,               // ускорение танка при плавном движении
-  BSPEED: 5,            // скорость пули (умножается на T)
-  TURN: 5,              // скорость поворота танка (рад/с)
-  LIFE: 5,              // время жизни пули (с), задаётся из меню
-  BONUS_EVERY: 5,       // интервал появления бонуса (с)
-  BONUS_LIFE: 10,       // время, которое бонус лежит на карте (с)
-  MAX_BONUS: -1,        // -1 — без ограничений, 0 — бонусов нет, N — максимум N
-  BOOST: 5,             // длительность ускорения от бонуса Speed (с)
-  GRACE: 3,             // задержка перед концом раунда (с)
-  NEXT_ROUND: 2500,     // пауза между раундами (мс)
-  WALL_T: 0.12,         // толщина стены в долях T
-  OPEN: 0.3,            // доля дополнительных проходов в стенах
-  STEP: 0.1,            // шаг подсчёта движения в долях T (должен быть меньше WALL_T)
-  NUKE_LIFE: 15,        // время до автоматического взрыва бомбы (с)
-  NUKE_SHARDS: 25,      // количество осколков при взрыве
-  SHARD_SPEED: 4,       // скорость осколков (умножается на T)
-  SHARD_LIFE: 4,        // время жизни осколка (с)
-  BULLET_R: 4,          // радиус пули (px), должен совпадать с Bullet
-  BOMB_SCALE: 2,        // во сколько раз бомба больше пули
-  FPS_CAP: 100          // **максимальная частота кадров**
+  MAXV: 3,          // базовая скорость танка (клеток в секунду)
+  ACC: 3,           // ускорение танка при плавном движении
+  BSPEED: 5,        // скорость пули (умножается на T)
+  TURN: 5,          // скорость поворота танка (рад/с)
+  LIFE: 5,          // время жизни пули (с)
+  BONUS_EVERY: 5,   // интервал появления бонуса (с)
+  BONUS_LIFE: 20,   // время, которое бонус лежит на карте (с)
+  MAX_BONUS: -1,    // -1 — без ограничений, 0 — бонусов нет, N — максимум N
+  BOOST: 5,         // длительность ускорения от бонуса Speed (с)
+  GRACE: 3,         // задержка перед концом раунда (с)
+  NEXT_ROUND: 2000, // пауза между раундами (мс)
+  WALL_T: 0.12,     // толщина стены в долях T
+  OPEN: 0.3,        // доля дополнительных проходов в стенах
+  STEP: 0.1,        // шаг подсчёта движения в долях T (должен быть меньше WALL_T)
+  NUKE_LIFE: 10,    // время до автоматического взрыва бомбы (с)
+  NUKE_SHARDS: 25,  // количество осколков при взрыве
+  SHARD_SPEED: 3.5, // скорость осколков (умножается на T)
+  SHARD_LIFE: 2.5,  // время жизни осколка (с)
+  BULLET_R: 4.5,    // радиус пули (px)
+  BOMB_SCALE: 1.5,  // во сколько раз бомба больше пули
+  FPS_CAP: 100,     // максимальная частота кадров
+  LASER_SPEED:60,   // скорость роста луча, в T за секунду
+  LASER_LEN:30,     // максимальная длина лазера, в T
+  SEG:0.5,          // сегмент лазера, половина танка (в T)
+  LASER_BOUNCES:5,  // количество отражений лазера от стен
+  LASER_LIFE:0.75,  // сколько секунд живёт каждый участок лазера
 };
 const SIDES=['n','e','s','w','c'];
 const KEYS=[
@@ -70,14 +75,14 @@ const KEYS=[
   {u:'ArrowUp',d:'ArrowDown',l:'ArrowLeft',r:'ArrowRight',f:'KeyM'},
   {u:'KeyI',d:'KeyK',l:'KeyJ',r:'KeyL',f:'KeyY'}];
 const COLORS=['#e74c3c','#3498db','#2ecc71','#f1c40f'];
-const BTYPES={hp:{c:'#e91e63',s:'+'},speed:{c:'#00bcd4',s:'»'},ammo:{c:'#ff9800',s:'•'},nuke:{c:'#ff0000',s:'Я'}};
+const BTYPES={hp:{c:'#e91e63',s:'+'},speed:{c:'#00bcd4',s:'»'},ammo:{c:'#ff9800',s:'•'},nuke:{c:'#ff0000',s:'Я'},laser:{c:'#e01b24',s:'Л',sq:true}};
 const rnd=n=>Math.floor(Math.random()*n);
 const norm=a=>Math.atan2(Math.sin(a),Math.cos(a));
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 const over=document.getElementById('over'),win=document.getElementById('win'),fin=document.getElementById('fin'),msg=document.getElementById('msg');
 const hudEl=document.getElementById('hud'),menu=document.getElementById('menu');
 
-// ===== Ввод =====
+// === Ввод ===
 class Input{
   constructor(){
     this.down={};this.mouse={x:0,y:0,l:false,r:false};
@@ -109,7 +114,7 @@ class Input{
   }
 }
 
-// ===== Карта: каждая клетка хранит строку сторон стен ('' = пусто, 'ne' = две полоски) =====
+// === Карта: каждая клетка хранит строку сторон стен ('' = пусто, 'ne' = две стены) ===
 class GameMap{
   constructor(o){
     const range=(a,b)=>a+rnd(b-a+1);
@@ -219,7 +224,7 @@ class GameMap{
   }
 }
 
-// ===== Танк =====
+// === Танк ===
 class Tank{
   constructor(g,x,y,color,ctrl,name){
     Object.assign(this,{g,x,y,color,ctrl,name,a:0,v:0,hp:g.opts.hp,ammo:g.opts.ammo,boost:0,alive:true,fireWas:false,nukes:0,bomb:null});
@@ -271,6 +276,7 @@ class Tank{
   }
 
   shoot(){
+    if(this.laser){this.laser=false;this.g.lasers.push(new Laser(this,this.g));return;}
     if(this.bomb&&!this.bomb.dead){this.bomb.explode(this.g);return;} // повторный выстрел взрывает бомбу
     if(this.nukes>0){this.nukes--;this.bomb=this.g.launchBomb(this);return;}
     if(this.g.bullets.filter(b=>b.owner===this).length>=this.ammo)return;
@@ -296,7 +302,7 @@ class Tank{
   }
 }
 
-// ===== Пуля =====
+// === Пуля ===
 class Bullet{
   constructor(owner,x,y,dx,dy){
     const s=CFG.BSPEED*owner.g.T;
@@ -326,7 +332,7 @@ class Bullet{
   draw(c){c.fillStyle=this.owner.color;c.beginPath();c.arc(this.x,this.y,3,0,7);c.fill();}
 }
 
-// ===== Ядерная бомба =====
+// === Ядерная бомба ===
 class Bomb{
   constructor(owner,x,y,dx,dy){
     const s=CFG.BSPEED*owner.g.T/3;
@@ -348,7 +354,7 @@ class Bomb{
   explode(g){
     if(this.dead)return;
     this.dead=true;
-    new Audio('bomb1.mp3').play().catch(()=>{}); // **звук один раз**
+    new Audio('bomb1.mp3').play().catch(()=>{}); // звук один раз
     g.stopAlarm();
     const T=g.T;
     for(let k=0;k<CFG.NUKE_SHARDS;k++){
@@ -363,9 +369,16 @@ class Bomb{
   }
 }
 
-// ===== Осколок-треугольник =====
+// === Осколок-треугольник ===
 class Shard{
   constructor(x,y,vx,vy,a,T){Object.assign(this,{x,y,vx,vy,a,T,life:CFG.SHARD_LIFE,dead:false});}
+  breakAt(x,y){
+    const i=Math.floor(x/this.T),j=Math.floor(y/this.T);
+    const k=this.crates.findIndex(c=>c.i===i&&c.j===j);
+    if(k<0)return false;
+    this.crates.splice(k,1);
+    return true;
+  }
   update(dt,g){
     if((this.life-=dt)<=0){this.dead=true;return;}
     const n=Math.max(1,Math.ceil(Math.hypot(this.vx,this.vy)*dt/(g.T*CFG.STEP))),sdt=dt/n;
@@ -382,7 +395,81 @@ class Shard{
   }
 }
 
-// ===== Игра (матч из нескольких раундов) =====
+class Laser{
+  constructor(owner,g){
+    const a=owner.a,dx=Math.cos(a),dy=Math.sin(a),x=owner.x+dx*owner.R,y=owner.y+dy*owner.R;
+    Object.assign(this,{g,owner,hx:x,hy:y,dx,dy,len:0,bounces:0,done:false,dead:false,age:0,
+      hist:[[0,0]],maxLen:CFG.LASER_LEN*g.T,seg:CFG.SEG*g.T,c:[[x,y,0,dx,dy]],
+      ox:owner.x,oy:owner.y});
+  }
+  step(d,sim){
+    const m=this.g.map;
+    if(this.len>=this.maxLen){this.done=true;return;}
+    const nx=this.hx+this.dx*d,ny=this.hy+this.dy*d;
+    const hx=m.pointWall(nx,this.hy),hy=m.pointWall(this.hx,ny);
+    if(hx||hy||m.pointWall(nx,ny)){
+      if(this.bounces>=CFG.LASER_BOUNCES){this.done=true;return;}
+      if(hx)this.dx=-this.dx;
+      if(hy)this.dy=-this.dy;
+      if(!hx&&!hy){this.dx=-this.dx;this.dy=-this.dy;}
+      this.bounces++;
+      this.c.push([this.hx,this.hy,this.len,this.dx,this.dy]);
+      return;
+    }
+    this.hx=nx;this.hy=ny;this.len+=d;
+    if(!sim)m.breakAt(nx,ny);
+  }
+  tailLen(){ // где находится хвост лазера: участки старше LASER_LIFE уже исчезли
+    const t=this.age-CFG.LASER_LIFE;let L=0;
+    for(const[age,len]of this.hist){if(age>=t)break;L=len;}
+    return Math.floor(L/this.seg)*this.seg;
+  }
+  update(dt){
+    this.age+=dt;
+    if(!this.done){
+      let rem=CFG.LASER_SPEED*this.g.T*dt;
+      while(rem>0&&!this.done){const d=Math.min(2,rem);rem-=d;this.step(d);}
+    }
+    this.hist.push([this.age,this.len]);
+    while(this.hist.length>1&&this.hist[1][0]<this.age-CFG.LASER_LIFE)this.hist.shift();
+    const a=this.tailLen(),b=Math.floor(this.len/this.seg)*this.seg;
+    if(this.done&&a>=b){this.dead=true;return;}
+    const P=this.poly(a,b);
+    for(let i=0;i<P.length-1;i++){
+      const p=P[i],q=P[i+1];
+      for(const t of this.g.tanks){
+        if(!t.alive)continue;
+        if(t===this.owner){
+          if(Math.hypot(q[0]-this.ox,q[1]-this.oy)<2*t.R)continue;
+          if(segDist(t.x,t.y,p[0],p[1],q[0],q[1])<t.R*0.9)t.die();
+          continue;
+        }
+        if(segDist(t.x,t.y,p[0],p[1],q[0],q[1])<t.R)t.die();
+      }
+    }
+  }
+  poly(a,b){ // видимая часть лазера между расстояниями a и b вдоль пути
+    const P=[];
+    for(let i=0;i<this.c.length;i++){
+      const[x,y,L,dx,dy]=this.c[i],n=this.c[i+1],E=n?n[2]:Infinity;
+      if(L>=b)break;
+      const s0=Math.max(L,a),s1=Math.min(E,b);
+      if(s1<=s0)continue;
+      P.push([x+dx*(s0-L),y+dy*(s0-L)],[x+dx*(s1-L),y+dy*(s1-L)]);
+    }
+    return P;
+  }
+  draw(c){
+    const P=this.poly(this.tailLen(),Math.floor(this.len/this.seg)*this.seg);
+    if(P.length<2)return;
+    c.save();c.strokeStyle='#ff2020';c.lineWidth=5;c.lineJoin='round';c.shadowColor='#f00';c.shadowBlur=12;
+    c.beginPath();c.moveTo(P[0][0],P[0][1]);
+    for(const p of P.slice(1))c.lineTo(p[0],p[1]);
+    c.stroke();c.restore();
+  }
+}
+
+// === Игра (матч из нескольких раундов) ===
 class Game{
   constructor(){
     this.input=new Input();this.active=false;this.timer=null;this.paused=false;
@@ -394,7 +481,7 @@ class Game{
     document.body.appendChild(this.fpsEl);
     window.addEventListener('keydown',e=>{
       if(e.code==='KeyF'&&!e.repeat){
-        this.showFps=!this.showFps;   // **F включает и выключает счётчик**
+        this.showFps=!this.showFps;   // F включает и выключает счётчик
         this.fpsEl.style.display=this.showFps?'block':'none';
       }
     });
@@ -424,7 +511,7 @@ class Game{
     const n=this.players.length;
     const all=[];
     for(let j=0;j<h;j++)for(let i=0;i<w;i++)all.push([i,j]);
-    let minD=Math.min(w,h)/2; // минимальное расстояние между танками в клетках
+    let minD=Math.min(w,h)/3; // минимальное расстояние между танками в клетках
     let spots=[];
     do{
       spots=[];
@@ -443,7 +530,7 @@ class Game{
       t.a=Math.atan2(h*T/2-y,w*T/2-x);return t;
     });
 
-    this.bullets=[];this.bonuses=[];this.bombs=[];this.shards=[];this.bt=0;this.ht=0;this.grace=null;this.stopAlarm();
+    this.bullets=[];this.lasers=[];this.bonuses=[];this.bombs=[];this.shards=[];this.bt=0;this.ht=0;this.grace=null;this.stopAlarm();
     this.running=true;this.last=performance.now();
     msg.classList.add('hide');
     this.hud();
@@ -469,11 +556,11 @@ class Game{
         if(!t.alive)continue;
         const d=Math.hypot(t.x-b.x,t.y-b.y);
         if(t===b.owner){
-          if(d>t.R+b.R)b.armed=true; // **владелец защищён, пока бомба рядом с ним**
+          if(d>t.R+b.R)b.armed=true; // владелец защищён, пока бомба рядом с ним
           if(!b.armed)continue;
         }
         if(d<t.R+b.R){
-          b.explode(this); // **взрыв при касании любого танка**
+          b.explode(this); // взрыв при касании любого танка
           break;
         }
       }
@@ -485,11 +572,12 @@ class Game{
       for(const t of this.tanks){
         if(!t.alive)continue;
         if(Math.hypot(t.x-s.x,t.y-s.y)<t.R+(s.R||2)){
-          t.die(); // **танк уничтожается сразу, здоровье не учитывается**
+          t.die(); // танк уничтожается сразу, здоровье не учитывается
         }
       }
     }
   }
+
 
   update(dt){
     this.tanks.forEach(t=>t.update(dt));
@@ -501,6 +589,8 @@ class Game{
     this.shards.forEach(s=>s.update(dt,this));
     this.shards=this.shards.filter(s=>!s.dead);
     this.killTanksByShards();
+    this.lasers.forEach(l=>l.update(dt));
+    this.lasers=this.lasers.filter(l=>!l.dead);
     if(!this.bombs.length)this.stopAlarm();
 
     if((this.bt+=dt)>=CFG.BONUS_EVERY){this.bt=0;this.spawnBonus();}
@@ -568,6 +658,7 @@ class Game{
       if(b.type==='speed')t.boost=CFG.BOOST;
       if(b.type==='ammo')t.ammo+=1;
       if(b.type==='nuke')t.nukes++;
+      if(b.type==='laser')t.laser=true;
     }
 
   launchBomb(t){
@@ -590,17 +681,19 @@ class Game{
     c.textAlign='center';c.textBaseline='middle';
     for(const b of this.bonuses){
       const d=BTYPES[b.type];c.fillStyle=d.c;
+      if(d.sq)c.fillRect(b.x-T*0.25,b.y-T*0.25,T*0.5,T*0.5);
       if(b.type==='nuke')c.fillRect(b.x-T*0.25,b.y-T*0.25,T*0.5,T*0.5);
       else{c.beginPath();c.arc(b.x,b.y,T*0.25,0,7);c.fill();}
       c.fillStyle='#fff';c.font=`bold ${T*0.3}px Arial`;c.fillText(d.s,b.x,b.y);
     }
-    this.tanks.forEach(t=>t.draw(c));
+    this.tanks.forEach(t=>{t.draw(c);if(t.laser)drawLaserPreview(t,this,c);});
+    this.lasers.forEach(l=>l.draw(c));
     this.bullets.forEach(b=>b.draw(c));
     this.bombs.forEach(b=>b.draw(c));
     this.shards.forEach(s=>s.draw(c));
     if(this.bombs.length&&Math.floor(performance.now()/300)%2){
       c.fillStyle='#ff1744';c.font=`bold ${Math.min(cv.width/16,56)}px Arial`;
-      c.fillText('ВНИМАНИЕ! ЯДЕРНАЯ УГРОЗА',cv.width/2,cv.height/2);
+      c.fillText('ЯДЕРНАЯ УГРОЗА! ДОГОВОРНЯЧКА МОЖЕТ И НЕ БЫТЬ',cv.width/2,cv.height/2);
     }
   }
 
@@ -611,7 +704,7 @@ class Game{
   }
 }
 
-// ===== Меню =====
+// === Меню ===
 const game=new Game();
 const cols=document.getElementById('cols'),cnt=document.getElementById('cnt');
 const picked=[...COLORS];
@@ -637,7 +730,7 @@ function renderCols(){
 cnt.onchange=renderCols;renderCols();
 document.getElementById('names').onchange=renderCols;
 
-// Размеры карты: от 5 до 24 клеток, минимум не может превышать максимум
+// Размеры карты, минимум не может превышать максимум
 const SIZES=Array.from({length:20},(_,i)=>i+5);
 function fillSizes(id,val){
   const s=document.getElementById(id);
@@ -651,7 +744,7 @@ function linkRange(minId,maxId){
 }
 linkRange('minW','maxW');linkRange('minH','maxH');
 
-// ===== Сохранение настроек в cookie =====
+// === Сохранение настроек в cookie ===
 const SETTING_IDS=['cnt','tgt','hp','ammo','speed','smooth','floorColor','wallColor','bltime','minW','maxW','minH','maxH','names'];
 const DEFAULTS={cnt:3,tgt:3,hp:3,ammo:3,speed:1,smooth:0,floorColor:'#77767b',wallColor:'#5e5c64',bltime:5,minW:7,maxW:16,minH:7,maxH:16,names:0};
 const COOKIE_DAYS=3650;
@@ -697,6 +790,20 @@ function resetSettings(){
   renderCols();
   saveSettings();
 }
+function drawLaserPreview(t,g,c){
+  const l=new Laser(t,g),limit=7*l.seg;
+  while(!l.done&&l.len<limit)l.step(2,true);
+  const P=l.poly(0,Math.min(l.len,limit));
+  if(P.length<2)return;
+  c.save();c.setLineDash([6,6]);c.strokeStyle='rgba(255,0,0,0.6)';c.lineWidth=2;
+  c.beginPath();c.moveTo(P[0][0],P[0][1]);
+  for(const p of P.slice(1))c.lineTo(p[0],p[1]);
+  c.stroke();c.restore();
+}
+function segDist(px,py,ax,ay,bx,by){
+  const vx=bx-ax,vy=by-ay,t=Math.max(0,Math.min(1,((px-ax)*vx+(py-ay)*vy)/(vx*vx+vy*vy||1)));
+  return Math.hypot(px-(ax+vx*t),py-(ay+vy*t));
+}
 
 // сохраняем при любом изменении в меню (события всплывают из select, input и цветов игроков)
 menu.addEventListener('change',saveSettings);
@@ -741,7 +848,7 @@ document.getElementById('again').onclick=()=>{
   over.classList.add('hide');menu.classList.remove('hide');
 };
 
-// ===== Ё: собственное окно подтверждения выхода в меню =====
+// === Ё: подтверждения выхода в меню ===
 const ask=document.getElementById('ask');
 function openAsk(){ask.classList.remove('hide');game.paused=true;}
 function closeAsk(){ask.classList.add('hide');game.paused=false;}
@@ -752,7 +859,7 @@ addEventListener('keydown',e=>{
 document.getElementById('askYes').onclick=()=>{closeAsk();game.toMenu();};
 document.getElementById('askNo').onclick=closeAsk;
 
-// ===== Полноэкранный режим =====
+// === Полноэкранный режим ===
 const fsBtn=document.getElementById('fs');
 fsBtn.onclick=()=>{
   if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});
@@ -761,6 +868,5 @@ fsBtn.onclick=()=>{
 document.addEventListener('fullscreenchange',()=>{
   fsBtn.textContent=document.fullscreenElement?'Выйти из полного экрана':'На весь экран';
 });
-
 </script>
 </body></html>
